@@ -1,0 +1,15 @@
+.minimal-root{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:48px;background:linear-gradient(180deg,#051123,#061427);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;color:var(--text)}
+
+.minimal-inner{display:flex;flex-direction:column;align-items:center;gap:18px;text-align:center;max-width:920px}
+.logo{width:72px;height:72px;border-radius:12px;background:linear-gradient(90deg,#10a37f,#06b58a);display:flex;align-items:center;justify-content:center;font-size:28px;color:white;box-shadow:0 20px 50px rgba(6,16,30,0.6)}
+.big{font-size:96px;margin:0;line-height:0.98;font-weight:800}
+.mini{color:var(--muted);font-size:16px;margin:0}
+.enter{margin-top:6px;padding:14px 34px;border-radius:12px;background:linear-gradient(90deg,#10a37f,#06b58a);border:none;color:white;font-weight:800;font-size:16px;cursor:pointer;transition:transform .18s ease,box-shadow .18s ease}
+.enter:hover{transform:translateY(-4px);box-shadow:0 28px 60px rgba(6,16,30,0.5)}
+
+/* fade-in */
+.minimal-inner{opacity:0;transform:translateY(8px);animation:fadeIn 560ms cubic-bezier(.2,.9,.2,1) forwards}
+@keyframes fadeIn{to{opacity:1;transform:translateY(0)}}
+
+@media (max-width:980px){.big{font-size:44px}.logo{width:56px;height:56px;font-size:20px}}
+
