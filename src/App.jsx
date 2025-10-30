@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import "./App.css";
 import Registration from "./Registration";
+import Login from "./Login";
 import { io } from "socket.io-client";
 
 function App() {
@@ -26,7 +27,11 @@ function App() {
 
   const [usersList, setUsersList] = useState([]); // online users from server
   const [input, setInput] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
   const [showRegistration, setShowRegistration] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
 
   const socketRef = useRef(null);
   const chatRef = useRef(null);
@@ -34,7 +39,7 @@ function App() {
 
   // connect to socket.io server
   useEffect(() => {
-    const socket = io("http://localhost:3000");
+  const socket = io("http://localhost:3000");
     socketRef.current = socket;
 
     socket.on("connect", () => {
@@ -49,9 +54,17 @@ function App() {
     });
 
     socket.on("private_message", (msg) => {
-      // msg: { to, content, from, timestamp, fromName }
+      // msg: { to, content, from, timestamp, fromName, type }
       const peerId = msg.from === socket.id ? msg.to : msg.from;
-      const message = { senderId: msg.from, senderName: msg.fromName || 'User', text: msg.content, timestamp: msg.timestamp || Date.now() };
+      const messageBase = { senderId: msg.from, senderName: msg.fromName || 'User', timestamp: msg.timestamp || Date.now() };
+      let message;
+      if (msg.type === 'image') {
+        message = { ...messageBase, type: 'image', content: msg.content };
+      } else if (msg.type === 'audio') {
+        message = { ...messageBase, type: 'audio', content: msg.content };
+      } else {
+        message = { ...messageBase, type: 'text', text: msg.content };
+      }
       const chatId = peerId;
       setChats(prev => {
         const idx = prev.findIndex(c => c.id === chatId);
@@ -104,6 +117,25 @@ function App() {
     }
   };
 
+  const handleLogin = (user) => {
+    // user: { id, name, email }
+    const socketId = socketRef.current?.id || null;
+    const cu = { id: socketId || user.id, name: user.name, email: user.email };
+    setCurrentUser(cu);
+    setShowLogin(false);
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit("register", { name: user.name });
+    }
+  };
+
+  const handleLogout = () => {
+    try { localStorage.removeItem('practice_current_user'); } catch (e) {}
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('logout');
+    }
+    setCurrentUser(null);
+  };
+
   const startChatWith = (user) => {
     // user: { id, name }
     const chatId = user.id;
@@ -124,18 +156,91 @@ function App() {
     const timestamp = Date.now();
     const content = input.trim();
 
-    const message = { senderId: from, senderName: fromName, text: content, timestamp };
+    const message = { senderId: from, senderName: fromName, text: content, timestamp, type: 'text' };
     setChats(prev => {
       const next = prev.map(c => c.id === to ? { ...c, messages: [...c.messages, message] } : c);
       try { localStorage.setItem('practice_chats', JSON.stringify(next)); } catch(e) {}
       return next;
     });
 
-    // emit to server
-    socketRef.current?.emit('private_message', { to, content, from, timestamp, fromName });
+    // only emit to socket when the recipient is an online socket peer
+    if (activeIsSocket) {
+      socketRef.current?.emit('private_message', { to, content, from, timestamp, fromName, type: 'text' });
+    }
 
     setInput('');
     setTimeout(() => inputRef.current?.focus(), 10);
+  };
+
+  // image upload support
+  const fileInputRef = useRef(null);
+  const handlePickImage = () => fileInputRef.current?.click();
+  const handleImageSelected = (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !activeChatId || !currentUser) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const to = activeChatId;
+      const from = socketRef.current?.id || 'local';
+      const fromName = currentUser.name || 'Me';
+      const timestamp = Date.now();
+      const message = { senderId: from, senderName: fromName, timestamp, type: 'image', content: dataUrl };
+      setChats(prev => {
+        const next = prev.map(c => c.id === to ? { ...c, messages: [...c.messages, message] } : c);
+        try { localStorage.setItem('practice_chats', JSON.stringify(next)); } catch(e) {}
+        return next;
+      });
+      socketRef.current?.emit('private_message', { to, content: dataUrl, from, timestamp, fromName, type: 'image' });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  // voice recording support
+  const startRecording = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Audio recording not supported.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      mr.ondataavailable = (ev) => { if (ev.data && ev.data.size) audioChunksRef.current.push(ev.data); };
+      mr.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result;
+          const to = activeChatId;
+          const from = socketRef.current?.id || 'local';
+          const fromName = currentUser.name || 'Me';
+          const timestamp = Date.now();
+          const message = { senderId: from, senderName: fromName, timestamp, type: 'audio', content: dataUrl };
+          setChats(prev => {
+            const next = prev.map(c => c.id === to ? { ...c, messages: [...c.messages, message] } : c);
+            try { localStorage.setItem('practice_chats', JSON.stringify(next)); } catch(e) {}
+            return next;
+          });
+          socketRef.current?.emit('private_message', { to, content: dataUrl, from, timestamp, fromName, type: 'audio' });
+        };
+        reader.readAsDataURL(blob);
+        stream.getTracks().forEach(t => t.stop());
+        setIsRecording(false);
+      };
+      mediaRecorderRef.current = mr;
+      mr.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error('record error', err);
+      alert('Could not start audio recording.');
+    }
+  };
+
+  const stopRecording = () => {
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== 'inactive') mr.stop();
   };
 
   const handleNewChat = () => {
@@ -148,13 +253,32 @@ function App() {
   const activeChat = chats.find(c => c.id === activeChatId);
   const activeIsSocket = usersList.some(u => u.id === activeChatId);
 
+  const getTitleForId = (id) => {
+    if (!id) return '';
+    const fromChats = chats.find(c => c.id === id);
+    if (fromChats) return fromChats.title || fromChats.id;
+    const fromUsers = usersList.find(u => u.id === id);
+    if (fromUsers) return fromUsers.name || fromUsers.id;
+    return id;
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-header">Chats</div>
         <div className="sidebar-actions">
           <button onClick={handleNewChat} className="new-chat">+ New chat</button>
-          <button onClick={() => setShowRegistration(s => !s)} className="register-btn">{showRegistration ? 'Close' : (currentUser?.name || 'Register')}</button>
+          {!currentUser ? (
+            <>
+              <button onClick={() => setShowRegistration(s => !s)} className="register-btn">{showRegistration ? 'Close' : 'Register'}</button>
+              <button onClick={() => setShowLogin(s => !s)} className="register-btn">{showLogin ? 'Close' : 'Login'}</button>
+            </>
+          ) : (
+            <div style={{display:'flex',gap:8}}>
+              <div style={{alignSelf:'center',color:'var(--muted)',fontSize:13}}>{currentUser.name}</div>
+              <button onClick={handleLogout} className="register-btn">Logout</button>
+            </div>
+          )}
         </div>
 
         <div style={{ marginTop: 6, marginBottom: 8, color: 'var(--muted)', fontSize: 12 }}>Online</div>
@@ -193,13 +317,23 @@ function App() {
         <section className="main-body">
           {showRegistration ? (
             <Registration onRegister={handleRegister} onClose={() => setShowRegistration(false)} />
+          ) : showLogin ? (
+            <Login onLogin={handleLogin} onClose={() => setShowLogin(false)} />
           ) : (
             <div className="chat-box" ref={chatRef}>
               {activeChat ? (
                 activeChat.messages.map((msg, i) => (
                   <div key={i} className={`message ${msg.senderId === (socketRef.current?.id || 'local') ? 'user' : 'peer'}`}>
                     <div style={{ fontSize:12, color:'var(--muted)', marginBottom:6 }}>{msg.senderName}</div>
-                    <div>{msg.text}</div>
+                    <div>
+                      {msg.type === 'image' ? (
+                        <img src={msg.content} alt="sent" className="message-image" />
+                      ) : msg.type === 'audio' ? (
+                        <audio controls src={msg.content} className="message-audio" />
+                      ) : (
+                        <div>{msg.text}</div>
+                      )}
+                    </div>
                   </div>
                 ))
               ) : (
@@ -211,15 +345,32 @@ function App() {
 
         <footer className="main-footer">
           <div className="input-box">
+            <div className="recipient-wrap">
+              <label htmlFor="recipient" className="sr-only">Recipient</label>
+              <select id="recipient" className="recipient-select" value={activeChatId || ''} onChange={e => setActiveChatId(e.target.value)}>
+                <option value="" disabled>Choose recipient...</option>
+                {usersList.map(u => (
+                  <option key={`u-${u.id}`} value={u.id}>{u.name || `User ${u.id}`}</option>
+                ))}
+                {chats.map(c => (
+                  <option key={`c-${c.id}`} value={c.id}>{c.title || `Chat ${c.id}`}</option>
+                ))}
+              </select>
+            </div>
+            <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImageSelected} />
+            <div className="input-controls">
+              <button title="Upload image" className="media-btn" onClick={handlePickImage} disabled={!currentUser || !activeChatId || !activeIsSocket}>📷</button>
+              <button title={isRecording ? 'Stop recording' : 'Record voice'} className={`media-btn record ${isRecording ? 'recording' : ''}`} onClick={() => { if (isRecording) stopRecording(); else startRecording(); }} disabled={!currentUser || !activeChatId || !activeIsSocket}>{isRecording ? '■' : '🎤'}</button>
+            </div>
             <textarea
               ref={inputRef}
               value={input}
               onChange={e => setInput(e.target.value)}
-              placeholder={!currentUser ? 'Register to start chatting' : (!activeChatId ? 'Select a conversation' : (activeIsSocket ? 'Type a message...' : 'Select an online user to message'))}
-              disabled={!currentUser || !activeChatId || !activeIsSocket}
+              placeholder={!currentUser ? 'Register to start chatting' : (!activeChatId ? 'Select a conversation' : (activeIsSocket ? 'Type a message...' : 'Type a message (will be saved locally)'))}
+              disabled={!currentUser || !activeChatId}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
             />
-            <button onClick={handleSend} className="send-btn" disabled={!currentUser || !activeChatId || !activeIsSocket}>Send</button>
+            <button onClick={handleSend} className="send-btn" disabled={!currentUser || !activeChatId}>Send</button>
           </div>
         </footer>
       </main>
